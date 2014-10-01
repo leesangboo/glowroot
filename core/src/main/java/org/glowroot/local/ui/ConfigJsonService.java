@@ -26,11 +26,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.google.common.io.CharStreams;
+import io.undertow.Undertow;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.StatusCodes;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
-import org.jboss.netty.handler.codec.http.HttpResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -53,8 +55,6 @@ import org.glowroot.markers.Singleton;
 import org.glowroot.transaction.TransactionModule;
 
 import static com.google.common.base.Preconditions.checkNotNull;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.BAD_REQUEST;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.PRECONDITION_FAILED;
 
 /**
  * Json service to read and update config data.
@@ -213,7 +213,7 @@ class ConfigJsonService {
         try {
             configService.updateTraceConfig(overlay.build(), priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         return getTraceConfig();
     }
@@ -229,7 +229,7 @@ class ConfigJsonService {
         try {
             configService.updateProfilingConfig(overlay.build(), priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         return getProfilingConfig();
     }
@@ -245,7 +245,7 @@ class ConfigJsonService {
         try {
             configService.updateUserRecordingConfig(overlay.build(), priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         return getUserRecordingConfig();
     }
@@ -261,7 +261,7 @@ class ConfigJsonService {
         try {
             configService.updateStorageConfig(overlay.build(), priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         // resize() doesn't do anything if the new and old value are the same
         cappedDatabase.resize(configService.getStorageConfig().getCappedDatabaseSizeMb() * 1024);
@@ -269,8 +269,8 @@ class ConfigJsonService {
     }
 
     @POST("/backend/config/user-interface")
-    String updateUserInterfaceConfig(String content, HttpResponse response) throws IOException,
-            GeneralSecurityException, SQLException {
+    String updateUserInterfaceConfig(String content, HttpServerExchange exchange)
+            throws IOException, GeneralSecurityException, SQLException {
         logger.debug("updateUserInterfaceConfig(): content={}", content);
         // this code cannot be reached when httpServer is null
         checkNotNull(httpServer);
@@ -288,19 +288,21 @@ class ConfigJsonService {
         try {
             configService.updateUserInterfaceConfig(updatedConfig, priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         // only create/delete session on successful update
         if (!config.isPasswordEnabled() && updatedConfig.isPasswordEnabled()) {
-            httpSessionManager.createSession(response);
+            httpSessionManager.createSession(exchange);
         } else if (config.isPasswordEnabled() && !updatedConfig.isPasswordEnabled()) {
-            httpSessionManager.deleteSession(response);
+            httpSessionManager.deleteSession(exchange);
         }
         // lastly deal with ui port change
         if (config.getPort() != updatedConfig.getPort()) {
             try {
-                httpServer.changePort(updatedConfig.getPort());
-                response.headers().set("Glowroot-Port-Changed", "true");
+                Undertow previousUndertow = httpServer.changePort(updatedConfig.getPort());
+                exchange.getResponseSender().send(getUserInterface());
+                exchange.endExchange();
+                previousUndertow.stop();
             } catch (PortChangeFailedException e) {
                 logger.error(e.getMessage(), e);
                 return getUserInterfaceWithPortChangeFailed();
@@ -320,7 +322,7 @@ class ConfigJsonService {
         try {
             configService.updateAdvancedConfig(overlay.build(), priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         return getAdvanced();
     }
@@ -341,7 +343,7 @@ class ConfigJsonService {
         try {
             configService.updatePluginConfig(builder.build(), priorVersion);
         } catch (OptimisticLockException e) {
-            throw new JsonServiceException(PRECONDITION_FAILED, e);
+            throw new JsonServiceException(StatusCodes.PRECONDITION_FAILED, e);
         }
         return getPluginConfig(pluginId);
     }
@@ -376,10 +378,11 @@ class ConfigJsonService {
     @EnsuresNonNull("#1")
     private void validateVersionNode(@Nullable JsonNode versionNode) {
         if (versionNode == null) {
-            throw new JsonServiceException(BAD_REQUEST, "Version is missing");
+            throw new JsonServiceException(StatusCodes.BAD_REQUEST, "Version is missing");
         }
         if (!versionNode.isTextual()) {
-            throw new JsonServiceException(BAD_REQUEST, "Version is not a string value");
+            throw new JsonServiceException(StatusCodes.BAD_REQUEST,
+                    "Version is not a string value");
         }
     }
 }

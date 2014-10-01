@@ -1,5 +1,5 @@
 /*
- * Copyright 2012-2013 the original author or authors.
+ * Copyright 2012-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,6 @@
 package org.glowroot.local.ui;
 
 import java.lang.annotation.Retention;
-
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
@@ -45,19 +43,19 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 @SuppressWarnings("serial")
 class JsonServiceException extends RuntimeException {
 
-    private final HttpResponseStatus status;
+    private final int status;
 
-    JsonServiceException(HttpResponseStatus status, Throwable cause) {
+    JsonServiceException(int status, Throwable cause) {
         super(cause);
         this.status = status;
     }
 
-    JsonServiceException(HttpResponseStatus status, String message) {
+    JsonServiceException(int status, String message) {
         super(message);
         this.status = status;
     }
 
-    HttpResponseStatus getStatus() {
+    int getStatus() {
         return status;
     }
 }

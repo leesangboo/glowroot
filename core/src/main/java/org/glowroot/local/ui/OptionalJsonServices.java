@@ -1,5 +1,5 @@
 /*
- * Copyright 2013 the original author or authors.
+ * Copyright 2013-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,10 @@
  */
 package org.glowroot.local.ui;
 
+import io.undertow.util.StatusCodes;
+
 import org.glowroot.jvm.OptionalService;
 import org.glowroot.markers.Static;
-
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.NOT_IMPLEMENTED;
 
 /**
  * @author Trask Stalnaker
@@ -33,7 +33,7 @@ class OptionalJsonServices {
             OptionalService<T> optionalService) {
         T service = optionalService.getService();
         if (service == null) {
-            throw new JsonServiceException(NOT_IMPLEMENTED,
+            throw new JsonServiceException(StatusCodes.NOT_IMPLEMENTED,
                     optionalService.getClass().getSimpleName() + " service is not available: "
                             + optionalService.getAvailability().getReason());
         }

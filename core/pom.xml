@@ -54,8 +54,8 @@
       <version>5.0.3</version>
     </dependency>
     <dependency>
-      <groupId>io.netty</groupId>
-      <artifactId>netty</artifactId>
+      <groupId>io.undertow</groupId>
+      <artifactId>undertow-core</artifactId>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -293,12 +293,29 @@
                       </excludes>
                     </filter>
                     <filter>
-                      <artifact>io.netty:netty</artifact>
+                      <artifact>io.undertow:undertow-core</artifact>
                       <excludes>
-                        <exclude>META-INF/jboss-beans.xml</exclude>
+                        <exclude>META-INF/INDEX.LIST</exclude>
+                        <exclude>META-INF/services/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.jboss.logging:jboss-logging</artifact>
+                      <excludes>
                         <exclude>META-INF/LICENSE.txt</exclude>
-                        <exclude>META-INF/NOTICE.txt</exclude>
-                        <exclude>META-INF/license/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.jboss.xnio:xnio-api</artifact>
+                      <excludes>
+                        <exclude>META-INF/INDEX.LIST</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.jboss.xnio:xnio-nio</artifact>
+                      <excludes>
+                        <exclude>META-INF/INDEX.LIST</exclude>
+                        <exclude>META-INF/services/**</exclude>
                       </excludes>
                     </filter>
                     <filter>
@@ -369,8 +386,16 @@
                       <shadedPattern>org.glowroot.shaded.fasterxml.jackson</shadedPattern>
                     </relocation>
                     <relocation>
-                      <pattern>org.jboss.netty</pattern>
-                      <shadedPattern>org.glowroot.shaded.jboss.netty</shadedPattern>
+                      <pattern>io.undertow</pattern>
+                      <shadedPattern>org.glowroot.shaded.undertow</shadedPattern>
+                    </relocation>
+                    <relocation>
+                      <pattern>org.jboss.logging</pattern>
+                      <shadedPattern>org.glowroot.shaded.jboss.logging</shadedPattern>
+                    </relocation>
+                    <relocation>
+                      <pattern>org.xnio</pattern>
+                      <shadedPattern>org.glowroot.shaded.xnio</shadedPattern>
                     </relocation>
                     <relocation>
                       <pattern>org.slf4j</pattern>
@@ -378,13 +403,13 @@
                     </relocation>
                     <relocation>
                       <!-- this shades guava's use of java util logging which is needed to prevent
-                           java util logging from being initialized early (e.g. in the case of
-                           wildfly which wants to do some setup before jul is initialized) -->
+                        java util logging from being initialized early (e.g. in the case of
+                        wildfly which wants to do some setup before jul is initialized) -->
                       <pattern>java.util.logging</pattern>
                       <shadedPattern>org.glowroot.shaded.jul</shadedPattern>
                       <excludes>
                         <!-- don't shade the system property key "java.util.logging.manager"
-                             (unshaded string is needed in LazyPlatformMBeanServer) -->
+                          (unshaded string is needed in LazyPlatformMBeanServer) -->
                         <exclude>java.util.logging.manager</exclude>
                       </excludes>
                     </relocation>

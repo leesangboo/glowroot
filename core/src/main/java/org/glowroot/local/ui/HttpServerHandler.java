@@ -15,80 +15,62 @@
  */
 package org.glowroot.local.ui;
 
+import static com.google.common.base.Preconditions.checkNotNull;
+import static java.util.concurrent.TimeUnit.DAYS;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.glowroot.local.ui.HttpServerHandler.HttpMethod.GET;
+import static org.glowroot.local.ui.HttpServerHandler.HttpMethod.POST;
+import io.undertow.server.HttpHandler;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.DateUtils;
+import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
+import io.undertow.util.Methods;
+import io.undertow.util.StatusCodes;
+
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.lang.reflect.Method;
 import java.net.URL;
-import java.nio.channels.ClosedChannelException;
+import java.nio.ByteBuffer;
 import java.sql.SQLException;
 import java.util.Date;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.CaseFormat;
-import com.google.common.base.Charsets;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.io.CharStreams;
-import com.google.common.io.Resources;
 import org.checkerframework.checker.nullness.qual.Nullable;
-import org.h2.api.ErrorCode;
-import org.jboss.netty.buffer.ChannelBuffers;
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.channel.ChannelFuture;
-import org.jboss.netty.channel.ChannelFutureListener;
-import org.jboss.netty.channel.ChannelHandlerContext;
-import org.jboss.netty.channel.ChannelStateEvent;
-import org.jboss.netty.channel.ExceptionEvent;
-import org.jboss.netty.channel.MessageEvent;
-import org.jboss.netty.channel.SimpleChannelUpstreamHandler;
-import org.jboss.netty.channel.group.ChannelGroup;
-import org.jboss.netty.channel.group.DefaultChannelGroup;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpHeaders;
-import org.jboss.netty.handler.codec.http.HttpHeaders.Names;
-import org.jboss.netty.handler.codec.http.HttpRequest;
-import org.jboss.netty.handler.codec.http.HttpResponse;
-import org.jboss.netty.handler.codec.http.HttpResponseStatus;
-import org.jboss.netty.handler.codec.http.QueryStringDecoder;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import org.glowroot.common.ObjectMappers;
 import org.glowroot.common.Reflections;
 import org.glowroot.common.Reflections.ReflectiveException;
 import org.glowroot.common.Reflections.ReflectiveTargetException;
 import org.glowroot.markers.Singleton;
+import org.h2.api.ErrorCode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static com.google.common.base.Preconditions.checkNotNull;
-import static java.util.concurrent.TimeUnit.DAYS;
-import static java.util.concurrent.TimeUnit.MINUTES;
-import static org.glowroot.local.ui.HttpServerHandler.HttpMethod.GET;
-import static org.glowroot.local.ui.HttpServerHandler.HttpMethod.POST;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.NOT_MODIFIED;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.OK;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.REQUEST_TIMEOUT;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.UNAUTHORIZED;
-import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.base.CaseFormat;
+import com.google.common.base.Charsets;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.google.common.io.CharStreams;
+import com.google.common.io.Resources;
 
 /**
  * @author Trask Stalnaker
  * @since 0.5
  */
 @Singleton
-class HttpServerHandler extends SimpleChannelUpstreamHandler {
+class HttpServerHandler implements HttpHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(HttpServerHandler.class);
     private static final ObjectMapper mapper = ObjectMappers.create();
@@ -96,11 +78,6 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
     private static final long TEN_YEARS = DAYS.toMillis(365 * 10);
     private static final long ONE_DAY = DAYS.toMillis(1);
     private static final long FIVE_MINUTES = MINUTES.toMillis(5);
-
-    private static final ImmutableSet<String> BROWSER_DISCONNECT_MESSAGES = ImmutableSet.of(
-            "An existing connection was forcibly closed by the remote host",
-            "An established connection was aborted by the software in your host machine",
-            "Connection reset by peer");
 
     private static final ImmutableMap<String, String> mimeTypes =
             ImmutableMap.<String, String>builder()
@@ -116,15 +93,10 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
                     .put("map", "application/json")
                     .build();
 
-    private final ChannelGroup allChannels;
-
     private final LayoutJsonService layoutJsonService;
     private final ImmutableMap<Pattern, Object> uriMappings;
     private final ImmutableList<JsonServiceMapping> jsonServiceMappings;
     private final HttpSessionManager httpSessionManager;
-
-    private final ThreadLocal</*@Nullable*/Channel> currentChannel =
-            new ThreadLocal</*@Nullable*/Channel>();
 
     HttpServerHandler(LayoutJsonService layoutJsonService,
             ImmutableMap<Pattern, Object> uriMappings, HttpSessionManager httpSessionManager,
@@ -149,184 +121,110 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
         }
 
         this.jsonServiceMappings = ImmutableList.copyOf(jsonServiceMappings);
-        allChannels = new DefaultChannelGroup();
     }
 
     @Override
-    public void channelOpen(ChannelHandlerContext ctx, ChannelStateEvent e) {
-        logger.debug("channelOpen()");
-        allChannels.add(e.getChannel());
-    }
-
-    @Override
-    // @SuppressWarnings needed until this Checker Framework bug is fixed:
-    // https://code.google.com/p/checker-framework/issues/detail?id=293
-    @SuppressWarnings("initialization")
-    public void messageReceived(ChannelHandlerContext ctx, MessageEvent e) throws IOException,
-            SQLException, InterruptedException {
-        HttpRequest request = (HttpRequest) e.getMessage();
-        logger.debug("messageReceived(): request.uri={}", request.getUri());
-        Channel channel = e.getChannel();
-        currentChannel.set(channel);
-        HttpResponse response;
-        try {
-            response = handleRequest(request, channel);
-        } finally {
-            currentChannel.remove();
-        }
-        if (response == null) {
-            // streaming response
-            return;
-        }
-        boolean keepAlive = HttpHeaders.isKeepAlive(request);
-        if (response.headers().get("Glowroot-Port-Changed") != null) {
-            // current connection is the only open channel on the old port, keepAlive=false will add
-            // the listener below to close the channel after the response completes
-            //
-            // remove the hacky header, no need to send it back to client
-            response.headers().remove("Glowroot-Port-Changed");
-            response.headers().add("Connection", "close");
-            keepAlive = false;
-        }
-        if (keepAlive && response.getStatus() != NOT_MODIFIED) {
-            // add content-length header only for keep-alive connections
-            response.headers().add(Names.CONTENT_LENGTH, response.getContent().readableBytes());
-        }
-        logger.debug("messageReceived(): response={}", response);
-        ChannelFuture f = channel.write(response);
-        if (!keepAlive) {
-            // close non- keep-alive connections after the write operation is done
-            f.addListener(ChannelFutureListener.CLOSE);
-        }
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, ExceptionEvent e) {
-        if (e.getCause() instanceof InterruptedException) {
-            // ignore, probably just termination
-        } else {
-            if (e.getCause() instanceof IOException
-                    && BROWSER_DISCONNECT_MESSAGES.contains(e.getCause().getMessage())) {
-                // ignore, just a browser disconnect
-            } else if (e.getCause() instanceof ClosedChannelException) {
-                // ignore, just a browser disconnect
-            } else {
-                logger.warn(e.getCause().getMessage(), e.getCause());
-            }
-        }
-        e.getChannel().close();
-    }
-
-    @Override
-    public void channelClosed(ChannelHandlerContext ctx, ChannelStateEvent e) {
-        logger.debug("channelClosed()");
-    }
-
-    void close() {
-        allChannels.close().awaitUninterruptibly();
-    }
-
-    void closeAllButCurrent() {
-        Channel current = currentChannel.get();
-        for (Channel channel : allChannels) {
-            if (channel != current) {
-                channel.close().awaitUninterruptibly();
-            }
-        }
-    }
-
-    @Nullable
-    private HttpResponse handleRequest(HttpRequest request, Channel channel) throws IOException,
-            SQLException {
-        logger.debug("handleRequest(): request.uri={}", request.getUri());
-        QueryStringDecoder decoder = new QueryStringDecoder(request.getUri());
-        String path = decoder.getPath();
+    public void handleRequest(HttpServerExchange exchange) throws Exception {
+        logger.debug("handleRequest(): requestPath={}", exchange.getRequestPath());
+        String path = exchange.getRequestPath();
+        // TODO this is hacky and points to flaw of using '+' in urls
+        // e.g. /backend/config/capture-points/+
+        path = path.replace(' ', '+');
         logger.debug("handleRequest(): path={}", path);
         if (path.equals("/backend/login")) {
-            return httpSessionManager.login(request);
+            httpSessionManager.login(exchange);
+            return;
         }
         if (path.equals("/backend/sign-out")) {
-            return httpSessionManager.signOut(request);
+            httpSessionManager.signOut(exchange);
+            return;
         }
         for (Entry<Pattern, Object> uriMappingEntry : uriMappings.entrySet()) {
             Matcher matcher = uriMappingEntry.getKey().matcher(path);
             if (matcher.matches()) {
-                if (uriMappingEntry.getValue() instanceof HttpService) {
-                    if (httpSessionManager.needsAuthentication(request)) {
-                        return handleUnauthorized(request);
+                if (uriMappingEntry.getValue() instanceof HttpHandler) {
+                    if (httpSessionManager.needsAuthentication(exchange)) {
+                        handleUnauthorized(exchange);
+                        return;
                     }
-                    return ((HttpService) uriMappingEntry.getValue()).handleRequest(request,
-                            channel);
+                    exchange.dispatch((HttpHandler) uriMappingEntry.getValue());
+                    return;
                 } else {
                     // only other value type is String
                     String resourcePath = matcher.replaceFirst((String) uriMappingEntry.getValue());
-                    return handleStaticResource(resourcePath, request);
+                    handleStaticResource(resourcePath, exchange);
+                    return;
                 }
             }
         }
         for (JsonServiceMapping jsonServiceMapping : jsonServiceMappings) {
-            if (!jsonServiceMapping.httpMethod.name().equals(request.getMethod().getName())) {
+            if (!jsonServiceMapping.httpMethod.name().equals(
+                    exchange.getRequestMethod().toString())) {
                 continue;
             }
             Matcher matcher = jsonServiceMapping.pattern.matcher(path);
             if (matcher.matches()) {
-                if (httpSessionManager.needsAuthentication(request)) {
-                    return handleUnauthorized(request);
+                if (httpSessionManager.needsAuthentication(exchange)) {
+                    handleUnauthorized(exchange);
+                    return;
                 }
-                String requestText = getRequestText(request, decoder);
+                String requestText = getRequestText(exchange);
                 String[] args = new String[matcher.groupCount()];
                 for (int i = 0; i < args.length; i++) {
                     String group = matcher.group(i + 1);
                     checkNotNull(group);
                     args[i] = group;
                 }
-                return handleJsonRequest(jsonServiceMapping.service, jsonServiceMapping.methodName,
-                        args, requestText);
+                handleJsonRequest(jsonServiceMapping.service, jsonServiceMapping.methodName, args,
+                        requestText, exchange);
+                return;
             }
         }
-        logger.warn("unexpected uri: {}", request.getUri());
-        return new DefaultHttpResponse(HTTP_1_1, NOT_FOUND);
+        logger.warn("unexpected path: {}", path);
+        exchange.setResponseCode(StatusCodes.NOT_FOUND);
     }
 
-    private HttpResponse handleUnauthorized(HttpRequest request) {
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, UNAUTHORIZED);
-        if (httpSessionManager.getSessionId(request) != null) {
-            response.setContent(ChannelBuffers.copiedBuffer("{\"timedOut\":true}", Charsets.UTF_8));
+    private void handleUnauthorized(HttpServerExchange exchange) {
+        exchange.setResponseCode(StatusCodes.UNAUTHORIZED);
+        if (httpSessionManager.getSessionId(exchange) != null) {
+            exchange.getResponseSender().send("{\"timedOut\":true}");
         }
-        return response;
     }
 
-    private HttpResponse handleStaticResource(String path, HttpRequest request) throws IOException {
+    private void handleStaticResource(String path, HttpServerExchange exchange) throws IOException {
         int extensionStartIndex = path.lastIndexOf('.');
         if (extensionStartIndex == -1) {
             logger.warn("path has no extension: {}", path);
-            return new DefaultHttpResponse(HTTP_1_1, NOT_FOUND);
+            exchange.setResponseCode(StatusCodes.NOT_FOUND);
+            return;
         }
         String extension = path.substring(extensionStartIndex + 1);
         String mimeType = mimeTypes.get(extension);
         if (mimeType == null) {
             logger.warn("path {} has unexpected extension: {}", path, extension);
-            return new DefaultHttpResponse(HTTP_1_1, NOT_FOUND);
+            exchange.setResponseCode(StatusCodes.NOT_FOUND);
+            return;
         }
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
         if (path.startsWith("org/glowroot/local/ui/app-dist/favicon.")) {
-            response.headers().add(Names.EXPIRES, new Date(System.currentTimeMillis() + ONE_DAY));
+            Date expiresDate = new Date(System.currentTimeMillis() + ONE_DAY);
+            exchange.getResponseHeaders().put(Headers.EXPIRES, DateUtils.toDateString(expiresDate));
         } else if (path.endsWith(".js.map") || path.startsWith("/sources/")) {
             // javascript source maps and source files are not versioned
-            response.headers().add(Names.EXPIRES,
-                    new Date(System.currentTimeMillis() + FIVE_MINUTES));
+            Date expiresDate = new Date(System.currentTimeMillis() + FIVE_MINUTES);
+            exchange.getResponseHeaders().put(Headers.EXPIRES, DateUtils.toDateString(expiresDate));
         } else {
             // all other static resources are versioned and can be safely cached forever
             String filename = path.substring(path.lastIndexOf('/') + 1);
             int to = filename.lastIndexOf('.');
             int from = filename.lastIndexOf('.', to - 1);
             String rev = filename.substring(from + 1, to);
-            response.headers().add(Names.ETAG, rev);
-            response.headers().add(Names.EXPIRES, new Date(System.currentTimeMillis() + TEN_YEARS));
+            exchange.getResponseHeaders().put(Headers.ETAG, rev);
+            Date expiresDate = new Date(System.currentTimeMillis() + TEN_YEARS);
+            exchange.getResponseHeaders().put(Headers.EXPIRES, DateUtils.toDateString(expiresDate));
 
-            if (rev.equals(request.headers().get(Names.IF_NONE_MATCH))) {
-                response.setStatus(NOT_MODIFIED);
-                return response;
+            if (rev.equals(exchange.getRequestHeaders().get(Headers.IF_NONE_MATCH))) {
+                exchange.setResponseCode(StatusCodes.NOT_MODIFIED);
+                return;
             }
         }
         URL url;
@@ -338,73 +236,80 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
         }
         if (url == null) {
             logger.warn("unexpected path: {}", path);
-            return new DefaultHttpResponse(HTTP_1_1, NOT_FOUND);
+            exchange.setResponseCode(StatusCodes.NOT_FOUND);
+            return;
         }
         byte[] staticContent = Resources.toByteArray(url);
-        response.setContent(ChannelBuffers.copiedBuffer(staticContent));
-        response.headers().add(Names.CONTENT_TYPE, mimeType);
-        response.headers().add(Names.CONTENT_LENGTH, staticContent.length);
-        return response;
+        exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, mimeType);
+        exchange.getResponseHeaders().put(Headers.CONTENT_LENGTH, staticContent.length);
+        exchange.getResponseSender().send(ByteBuffer.wrap(staticContent));
     }
 
-    private HttpResponse handleJsonRequest(Object jsonService, String serviceMethodName,
-            String[] args, String requestText) {
+    private void handleJsonRequest(Object jsonService, String serviceMethodName, String[] args,
+            String requestText, HttpServerExchange exchange) {
 
         logger.debug("handleJsonRequest(): serviceMethodName={}, args={}, requestText={}",
                 serviceMethodName, args, requestText);
 
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
         Object responseText;
         try {
-            responseText = callMethod(jsonService, serviceMethodName, args, requestText, response);
+            responseText = callMethod(jsonService, serviceMethodName, args, requestText, exchange);
         } catch (ReflectiveTargetException e) {
             Throwable cause = e.getCause();
             if (cause instanceof JsonServiceException) {
                 // this is an "expected" exception, no need to log
-                JsonServiceException jsonServiceException = (JsonServiceException) cause;
-                return newHttpResponseFromJsonServiceException(jsonServiceException.getMessage(),
-                        jsonServiceException.getStatus());
+            	JsonServiceException jsonServiceException = (JsonServiceException) cause;
+            	newHttpResponseFromJsonServiceException(exchange,
+            			jsonServiceException.getStatus(), jsonServiceException.getMessage());
+                return;
             }
             logger.error(e.getMessage(), e);
             if (cause instanceof SQLException
                     && ((SQLException) cause).getErrorCode() == ErrorCode.STATEMENT_WAS_CANCELED) {
-                return newHttpResponseWithStackTrace(e, REQUEST_TIMEOUT,
+                newHttpResponseWithStackTrace(exchange, StatusCodes.REQUEST_TIME_OUT, e,
                         "Query timed out (timeout is configurable under Configuration > Advanced)");
+                return;
             }
-            return newHttpResponseWithStackTrace(e, INTERNAL_SERVER_ERROR, null);
+            newHttpResponseWithStackTrace(exchange, StatusCodes.INTERNAL_SERVER_ERROR, e, null);
+            return;
         } catch (ReflectiveException e) {
             logger.error(e.getMessage(), e);
-            return newHttpResponseWithStackTrace(e, INTERNAL_SERVER_ERROR, null);
+            newHttpResponseWithStackTrace(exchange, StatusCodes.INTERNAL_SERVER_ERROR, e, null);
+            return;
         }
         if (responseText == null) {
-            response.setContent(ChannelBuffers.EMPTY_BUFFER);
-            response.headers().add(Names.CONTENT_TYPE, "application/json; charset=UTF-8");
-            response.headers().add("Glowroot-Layout-Version", layoutJsonService.getLayoutVersion());
-            HttpServices.preventCaching(response);
-            return response;
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE,
+                    "application/json; charset=UTF-8");
+            exchange.getResponseHeaders().put(HttpString.tryFromString("Glowroot-Layout-Version"),
+                    layoutJsonService.getLayoutVersion());
+            HttpServices.preventCaching(exchange);
+            return;
         }
         if (responseText instanceof String) {
-            response.setContent(ChannelBuffers.copiedBuffer(responseText.toString(),
-                    Charsets.ISO_8859_1));
-            response.headers().add(Names.CONTENT_TYPE, "application/json; charset=UTF-8");
-            response.headers().add("Glowroot-Layout-Version", layoutJsonService.getLayoutVersion());
-            HttpServices.preventCaching(response);
-            return response;
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE,
+                    "application/json; charset=UTF-8");
+            exchange.getResponseHeaders().put(HttpString.tryFromString("Glowroot-Layout-Version"),
+                    layoutJsonService.getLayoutVersion());
+            HttpServices.preventCaching(exchange);
+            exchange.getResponseSender().send(responseText.toString());
+            return;
         }
         if (responseText instanceof byte[]) {
-            response.setContent(ChannelBuffers.wrappedBuffer((byte[]) responseText));
-            response.headers().add(Names.CONTENT_TYPE, "application/json; charset=UTF-8");
-            response.headers().add("Glowroot-Layout-Version", layoutJsonService.getLayoutVersion());
-            HttpServices.preventCaching(response);
-            return response;
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE,
+                    "application/json; charset=UTF-8");
+            exchange.getResponseHeaders().put(HttpString.tryFromString("Glowroot-Layout-Version"),
+                    layoutJsonService.getLayoutVersion());
+            HttpServices.preventCaching(exchange);
+            exchange.getResponseSender().send(ByteBuffer.wrap((byte[]) responseText));
+            return;
         }
         logger.warn("unexpected type of json service response: {}",
                 responseText.getClass().getName());
-        return new DefaultHttpResponse(HTTP_1_1, INTERNAL_SERVER_ERROR);
+        exchange.setResponseCode(StatusCodes.INTERNAL_SERVER_ERROR);
     }
 
-    private static HttpResponse newHttpResponseFromJsonServiceException(@Nullable String message,
-            HttpResponseStatus status) {
+    private static void newHttpResponseFromJsonServiceException(HttpServerExchange exchange,
+    		int statusCode, @Nullable String message) {
         // this is an "expected" exception, no need to send back stack trace
         StringBuilder sb = new StringBuilder();
         try {
@@ -413,18 +318,18 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
             jg.writeStringField("message", message);
             jg.writeEndObject();
             jg.close();
-            DefaultHttpResponse response = new DefaultHttpResponse(HTTP_1_1, status);
-            response.headers().add(Names.CONTENT_TYPE, "application/json; charset=UTF-8");
-            response.setContent(ChannelBuffers.copiedBuffer(sb.toString(), Charsets.ISO_8859_1));
-            return response;
+            exchange.setResponseCode(statusCode);
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE,
+                    "application/json; charset=UTF-8");
+            exchange.getResponseSender().send(sb.toString());
         } catch (IOException f) {
             logger.error(f.getMessage(), f);
-            return new DefaultHttpResponse(HTTP_1_1, INTERNAL_SERVER_ERROR);
+            exchange.setResponseCode(StatusCodes.INTERNAL_SERVER_ERROR);
         }
     }
 
-    private static HttpResponse newHttpResponseWithStackTrace(Exception e,
-            HttpResponseStatus status, @Nullable String simplifiedMessage) {
+    private static void newHttpResponseWithStackTrace(HttpServerExchange exchange,
+            int statusCode, Exception e, @Nullable String simplifiedMessage) {
         StringWriter sw = new StringWriter();
         e.printStackTrace(new PrintWriter(sw));
         StringBuilder sb = new StringBuilder();
@@ -447,19 +352,19 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
             jg.writeStringField("stackTrace", sw.toString());
             jg.writeEndObject();
             jg.close();
-            DefaultHttpResponse response = new DefaultHttpResponse(HTTP_1_1, status);
-            response.headers().add(Names.CONTENT_TYPE, "application/json; charset=UTF-8");
-            response.setContent(ChannelBuffers.copiedBuffer(sb.toString(), Charsets.ISO_8859_1));
-            return response;
+            exchange.setResponseCode(StatusCodes.INTERNAL_SERVER_ERROR);
+            exchange.getResponseHeaders().put(Headers.CONTENT_TYPE,
+                    "application/json; charset=UTF-8");
+            exchange.getResponseSender().send(sb.toString());
         } catch (IOException f) {
             logger.error(f.getMessage(), f);
-            return new DefaultHttpResponse(HTTP_1_1, INTERNAL_SERVER_ERROR);
+            exchange.setResponseCode(StatusCodes.INTERNAL_SERVER_ERROR);
         }
     }
 
     @Nullable
     private static Object callMethod(Object object, String methodName, String[] args,
-            String requestText, HttpResponse response) throws ReflectiveException {
+            String requestText, HttpServerExchange exchange) throws ReflectiveException {
         List<Class<?>> parameterTypes = Lists.newArrayList();
         List<Object> parameters = Lists.newArrayList();
         for (int i = 0; i < args.length; i++) {
@@ -482,9 +387,9 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
             } catch (ReflectiveException f) {
                 // log exception at debug level
                 logger.debug(f.getMessage(), f);
-                // try again with response
-                parameterTypes.add(HttpResponse.class);
-                parameters.add(response);
+                // try again with exchange
+                parameterTypes.add(HttpServerExchange.class);
+                parameters.add(exchange);
                 try {
                     method = Reflections.getDeclaredMethod(object.getClass(), methodName,
                             parameterTypes.toArray(new Class[parameterTypes.size()]));
@@ -499,21 +404,23 @@ class HttpServerHandler extends SimpleChannelUpstreamHandler {
                 parameters.toArray(new Object[parameters.size()]));
     }
 
-    private static String getRequestText(HttpRequest request, QueryStringDecoder decoder)
-            throws JsonProcessingException {
-        if (request.getMethod() == org.jboss.netty.handler.codec.http.HttpMethod.POST) {
-            return request.getContent().toString(Charsets.ISO_8859_1);
+    private static String getRequestText(HttpServerExchange exchange)
+            throws IOException {
+        if (exchange.getRequestMethod() == Methods.POST) {
+            exchange.startBlocking();
+            return CharStreams.toString(new InputStreamReader(exchange.getInputStream(),
+                    Charsets.ISO_8859_1));
         } else {
             // create json message out of the query string
             // flatten map values from list to single element where possible
             Map<String, Object> parameters = Maps.newHashMap();
-            for (Entry<String, List<String>> entry : decoder.getParameters().entrySet()) {
+            for (Entry<String, Deque<String>> entry : exchange.getQueryParameters().entrySet()) {
                 String key = entry.getKey();
                 key = CaseFormat.LOWER_HYPHEN.to(CaseFormat.LOWER_CAMEL, key);
                 // special rule for "-mbean" so that it will convert to "...MBean"
                 key = key.replace("Mbean", "MBean");
                 if (entry.getValue().size() == 1) {
-                    parameters.put(key, entry.getValue().get(0));
+                    parameters.put(key, entry.getValue().getFirst());
                 } else {
                     parameters.put(key, entry.getValue());
                 }

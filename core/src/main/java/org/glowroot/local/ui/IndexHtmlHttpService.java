@@ -20,22 +20,16 @@ import java.net.URL;
 
 import com.google.common.base.Charsets;
 import com.google.common.io.Resources;
-import org.jboss.netty.buffer.ChannelBuffers;
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpHeaders.Names;
-import org.jboss.netty.handler.codec.http.HttpRequest;
-import org.jboss.netty.handler.codec.http.HttpResponse;
-import org.jboss.netty.handler.codec.http.QueryStringDecoder;
-
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.OK;
-import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
+import io.undertow.server.HttpHandler;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 
 /**
  * @author Trask Stalnaker
  * @since 0.5
  */
-class IndexHtmlHttpService implements HttpService {
+class IndexHtmlHttpService implements HttpHandler {
 
     private final HttpSessionManager httpSessionManager;
     private final LayoutJsonService layoutJsonService;
@@ -47,23 +41,22 @@ class IndexHtmlHttpService implements HttpService {
     }
 
     @Override
-    public HttpResponse handleRequest(HttpRequest request, Channel channel) throws IOException {
+    public void handleRequest(HttpServerExchange exchange) throws IOException {
         URL url = Resources.getResource("org/glowroot/local/ui/app-dist/index.html");
         String indexHtml = Resources.toString(url, Charsets.UTF_8);
         String layout;
-        if (httpSessionManager.needsAuthentication(request)) {
+        if (httpSessionManager.needsAuthentication(exchange)) {
             layout = layoutJsonService.getUnauthenticatedLayout();
         } else {
             layout = layoutJsonService.getLayout();
         }
-        QueryStringDecoder decoder = new QueryStringDecoder(request.getUri());
-        String requestPath = decoder.getPath();
         String baseHrefScript = "var path=location.pathname;";
-        if (requestPath.equals("/")) {
+        if (exchange.getRequestPath().equals("/")) {
             // edge case, if request uri is "/", the location.pathname may end with "/" or not
             baseHrefScript += "if(!path||path.slice(-1)!=='/')path+='/';";
         }
-        baseHrefScript += "var base=path.substring(0,path.length-" + requestPath.length() + ");"
+        baseHrefScript += "var base=path.substring(0,path.length-"
+                + exchange.getRequestPath().length() + ");"
                 + "document.write('<base href=\"'+location.protocol+'//'"
                 + "+location.host+base+'/\"/>');";
         // embed script in IIFE to not polute global vars
@@ -88,14 +81,12 @@ class IndexHtmlHttpService implements HttpService {
                 "<script>document.write('<link rel=\"shortcut icon\" href=\"'"
                         + " + document.getElementsByTagName(\"base\")[0].href"
                         + " + 'favicon.$1.ico\">');</script>");
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
-        HttpServices.preventCaching(response);
-        response.headers().set(Names.CONTENT_TYPE, "text/html; charset=UTF-8");
-        response.headers().set(Names.CONTENT_LENGTH, indexHtml.length());
+        HttpServices.preventCaching(exchange);
+        exchange.getResponseHeaders().add(Headers.CONTENT_TYPE, "text/html; charset=UTF-8");
+        exchange.getResponseHeaders().add(Headers.CONTENT_LENGTH, indexHtml.length());
         // X-UA-Compatible must be set via header (as opposed to via meta tag)
         // see https://github.com/h5bp/html5-boilerplate/blob/master/doc/html.md#x-ua-compatible
-        response.headers().set("X-UA-Compatible", "IE=edge");
-        response.setContent(ChannelBuffers.copiedBuffer(indexHtml, Charsets.UTF_8));
-        return response;
+        exchange.getResponseHeaders().add(HttpString.tryFromString("X-UA-Compatible"), "IE=edge");
+        exchange.getResponseSender().send(indexHtml);
     }
 }

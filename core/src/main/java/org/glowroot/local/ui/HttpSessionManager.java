@@ -16,23 +16,19 @@
 package org.glowroot.local.ui;
 
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.math.BigInteger;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Map;
-import java.util.Set;
 
 import com.google.common.base.Charsets;
 import com.google.common.collect.Maps;
+import com.google.common.io.CharStreams;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.server.handlers.Cookie;
+import io.undertow.server.handlers.CookieImpl;
 import org.checkerframework.checker.nullness.qual.Nullable;
-import org.jboss.netty.buffer.ChannelBuffers;
-import org.jboss.netty.handler.codec.http.Cookie;
-import org.jboss.netty.handler.codec.http.CookieDecoder;
-import org.jboss.netty.handler.codec.http.CookieEncoder;
-import org.jboss.netty.handler.codec.http.DefaultCookie;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpRequest;
-import org.jboss.netty.handler.codec.http.HttpResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -41,11 +37,6 @@ import org.glowroot.config.ConfigService;
 import org.glowroot.markers.Singleton;
 
 import static java.util.concurrent.TimeUnit.MINUTES;
-import static org.jboss.netty.handler.codec.http.HttpHeaders.Names.COOKIE;
-import static org.jboss.netty.handler.codec.http.HttpHeaders.Names.SET_COOKIE;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.INTERNAL_SERVER_ERROR;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.OK;
-import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
  * @author Trask Stalnaker
@@ -70,34 +61,31 @@ class HttpSessionManager {
         this.layoutJsonService = layoutJsonService;
     }
 
-    HttpResponse login(HttpRequest request) throws IOException {
+    void login(HttpServerExchange exchange) throws IOException {
         boolean success;
-        String password = request.getContent().toString(Charsets.ISO_8859_1);
+        exchange.startBlocking();
+        String password = CharStreams.toString(new InputStreamReader(exchange.getInputStream(),
+                Charsets.ISO_8859_1));
         try {
             success = configService.getUserInterfaceConfig().validatePassword(password);
         } catch (GeneralSecurityException e) {
             logger.error(e.getMessage(), e);
-            return new DefaultHttpResponse(HTTP_1_1, INTERNAL_SERVER_ERROR);
+            exchange.setResponseCode(500);
+            return;
         }
         if (success) {
-            HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
-            createSession(response);
-            String text = layoutJsonService.getLayout();
-            response.setContent(ChannelBuffers.copiedBuffer(text, Charsets.ISO_8859_1));
-            return response;
+            createSession(exchange);
+            exchange.getResponseSender().send(layoutJsonService.getLayout());
         } else {
-            HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
-            String text = "{\"incorrectPassword\":true}";
-            response.setContent(ChannelBuffers.copiedBuffer(text, Charsets.ISO_8859_1));
-            return response;
+            exchange.getResponseSender().send("{\"incorrectPassword\":true}");
         }
     }
 
-    boolean needsAuthentication(HttpRequest request) {
+    boolean needsAuthentication(HttpServerExchange exchange) {
         if (!configService.getUserInterfaceConfig().isPasswordEnabled()) {
             return false;
         }
-        String sessionId = getSessionId(request);
+        String sessionId = getSessionId(exchange);
         if (sessionId == null) {
             return true;
         }
@@ -114,51 +102,39 @@ class HttpSessionManager {
         }
     }
 
-    HttpResponse signOut(HttpRequest request) {
-        String sessionId = getSessionId(request);
+    void signOut(HttpServerExchange exchange) {
+        String sessionId = getSessionId(exchange);
         if (sessionId != null) {
             sessionExpirations.remove(sessionId);
         }
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
-        deleteSession(response);
-        return response;
+        deleteSession(exchange);
     }
 
-    void createSession(HttpResponse response) {
-        CookieEncoder cookieEncoder = new CookieEncoder(true);
+    void createSession(HttpServerExchange exchange) {
         String sessionId = new BigInteger(130, secureRandom).toString(32);
         updateExpiration(sessionId);
-        Cookie cookie = new DefaultCookie("GLOWROOT_SESSION_ID", sessionId);
+        Cookie cookie = new CookieImpl("GLOWROOT_SESSION_ID", sessionId);
         cookie.setHttpOnly(true);
         cookie.setPath("/");
-        cookieEncoder.addCookie(cookie);
-        response.headers().add(SET_COOKIE, cookieEncoder.encode());
+        exchange.setResponseCookie(cookie);
         // TODO clean up expired sessions
     }
 
-    void deleteSession(HttpResponse response) {
-        CookieEncoder cookieEncoder = new CookieEncoder(true);
-        Cookie cookie = new DefaultCookie("GLOWROOT_SESSION_ID", "");
+    void deleteSession(HttpServerExchange exchange) {
+        Cookie cookie = new CookieImpl("GLOWROOT_SESSION_ID", "");
         cookie.setHttpOnly(true);
         cookie.setMaxAge(0);
         cookie.setPath("/");
-        cookieEncoder.addCookie(cookie);
-        response.headers().add(SET_COOKIE, cookieEncoder.encode());
+        exchange.setResponseCookie(cookie);
     }
 
     @Nullable
-    String getSessionId(HttpRequest request) {
-        String cookieHeader = request.headers().get(COOKIE);
-        if (cookieHeader == null) {
+    String getSessionId(HttpServerExchange exchange) {
+        Cookie cookie = exchange.getRequestCookies().get("GLOWROOT_SESSION_ID");
+        if (cookie == null) {
             return null;
         }
-        Set<Cookie> cookies = new CookieDecoder().decode(cookieHeader);
-        for (Cookie cookie : cookies) {
-            if (cookie.getName().equals("GLOWROOT_SESSION_ID")) {
-                return cookie.getValue();
-            }
-        }
-        return null;
+        return cookie.getValue();
     }
 
     private void updateExpiration(String sessionId) {

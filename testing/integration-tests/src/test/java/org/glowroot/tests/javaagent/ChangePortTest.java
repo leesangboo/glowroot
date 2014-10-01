@@ -94,7 +94,7 @@ public class ChangePortTest {
     public void shouldFailIfPortNotFree() throws Exception {
         // given
         container.addExpectedLogMessage("org.glowroot.local.ui.ConfigJsonService",
-                "Failed to bind");
+                "Address already in use");
         UserInterfaceConfig config = container.getConfigService().getUserInterfaceConfig();
         ServerSocket serverSocket = new ServerSocket(0);
         int newPort = serverSocket.getLocalPort();
@@ -108,5 +108,7 @@ public class ChangePortTest {
         }
         // then
         assertThat(portChangeFailed).isTrue();
+        // cleanup
+        serverSocket.close();
     }
 }

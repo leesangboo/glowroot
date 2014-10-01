@@ -1,5 +1,5 @@
 /*
- * Copyright 2013 the original author or authors.
+ * Copyright 2013-2014 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,9 @@ package org.glowroot.local.ui;
 
 import java.util.Date;
 
-import org.jboss.netty.handler.codec.http.HttpHeaders.Names;
-import org.jboss.netty.handler.codec.http.HttpResponse;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.DateUtils;
+import io.undertow.util.Headers;
 
 /**
  * @author Trask Stalnaker
@@ -28,12 +29,13 @@ class HttpServices {
 
     private HttpServices() {}
 
-    static void preventCaching(HttpResponse response) {
+    static void preventCaching(HttpServerExchange exchange) {
         // prevent caching of dynamic json data, using 'definitive' minimum set of headers from
         // http://stackoverflow.com/questions/49547/
         // making-sure-a-web-page-is-not-cached-across-all-browsers/2068407#2068407
-        response.headers().set(Names.CACHE_CONTROL, "no-cache, no-store, must-revalidate");
-        response.headers().set(Names.PRAGMA, "no-cache");
-        response.headers().set(Names.EXPIRES, new Date(0));
+        exchange.getResponseHeaders().put(Headers.CACHE_CONTROL,
+                "no-cache, no-store, must-revalidate");
+        exchange.getResponseHeaders().put(Headers.PRAGMA, "no-cache");
+        exchange.getResponseHeaders().put(Headers.EXPIRES, DateUtils.toDateString(new Date(0)));
     }
 }

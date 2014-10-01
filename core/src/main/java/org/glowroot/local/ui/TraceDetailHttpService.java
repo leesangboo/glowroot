@@ -16,25 +16,20 @@
 package org.glowroot.local.ui;
 
 import java.io.IOException;
-import java.io.StringReader;
+import java.io.OutputStreamWriter;
 import java.sql.SQLException;
-import java.util.List;
+import java.util.Deque;
 
+import com.google.common.base.Charsets;
 import com.google.common.io.CharSource;
+import io.undertow.server.HttpHandler;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
 import org.checkerframework.checker.nullness.qual.Nullable;
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpHeaders.Names;
-import org.jboss.netty.handler.codec.http.HttpRequest;
-import org.jboss.netty.handler.codec.http.HttpResponse;
-import org.jboss.netty.handler.codec.http.QueryStringDecoder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.glowroot.markers.Singleton;
-
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.OK;
-import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
  * Http service to read trace detail, bound to /backend/trace/entries, /backend/trace/profile and
@@ -44,7 +39,7 @@ import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
  * @since 0.5
  */
 @Singleton
-class TraceDetailHttpService implements HttpService {
+class TraceDetailHttpService implements HttpHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(TraceDetailHttpService.class);
 
@@ -57,21 +52,17 @@ class TraceDetailHttpService implements HttpService {
     // TODO test this can still return "{expired: true}" if user viewing trace, and it expires
     // before they expand detail
     @Override
-    @Nullable
-    public HttpResponse handleRequest(HttpRequest request, Channel channel) throws IOException {
-        QueryStringDecoder decoder = new QueryStringDecoder(request.getUri());
-        String path = decoder.getPath();
-        String traceComponent = path.substring(path.lastIndexOf('/') + 1);
-        List<String> traceIds = decoder.getParameters().get("trace-id");
-        if (traceIds == null) {
+    public void handleRequest(HttpServerExchange exchange) throws IOException {
+        String requestPath = exchange.getRequestPath();
+        String traceComponent = requestPath.substring(requestPath.lastIndexOf('/') + 1);
+        String traceId = getQueryParameter("trace-id", exchange);
+        if (traceId == null) {
             throw new IllegalStateException("Missing trace id in query string: "
-                    + request.getUri());
+                    + exchange.getQueryString());
         }
-        String traceId = traceIds.get(0);
         logger.debug("handleRequest(): traceComponent={}, traceId={}", traceComponent, traceId);
 
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
-        response.headers().set(Names.CONTENT_TYPE, "application/json; charset=UTF-8");
+        exchange.getResponseHeaders().add(Headers.CONTENT_TYPE, "application/json; charset=UTF-8");
         CharSource charSource;
         try {
             if (traceComponent.equals("entries")) {
@@ -81,21 +72,31 @@ class TraceDetailHttpService implements HttpService {
             } else if (traceComponent.equals("outlier-profile")) {
                 charSource = traceCommonService.getOutlierProfile(traceId);
             } else {
-                throw new IllegalStateException("Unexpected uri: " + request.getUri());
+                throw new IllegalStateException("Unexpected uri: " + requestPath);
             }
         } catch (SQLException e) {
             throw new IOException(e);
         }
-        HttpServices.preventCaching(response);
-        response.setChunked(true);
-        channel.write(response);
+        HttpServices.preventCaching(exchange);
         if (charSource == null) {
             // UI checks entriesExistence/outlierProfileExistence/traceProfileExistence so should
             // not end up here, but tests don't, send json null value to them
-            channel.write(ChunkedInputs.fromReader(new StringReader("null")));
+            exchange.getResponseSender().send("null");
         } else {
-            channel.write(ChunkedInputs.fromReader(charSource.openStream()));
+            exchange.startBlocking();
+            OutputStreamWriter out =
+                    new OutputStreamWriter(exchange.getOutputStream(), Charsets.UTF_8);
+            charSource.copyTo(out);
+            out.close();
         }
-        return null;
+    }
+
+    @Nullable
+    private static String getQueryParameter(String key, HttpServerExchange exchange) {
+        Deque<String> params = exchange.getQueryParameters().get(key);
+        if (params == null) {
+            return null;
+        }
+        return params.peek();
     }
 }

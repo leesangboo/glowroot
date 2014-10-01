@@ -25,7 +25,6 @@ import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import org.checkerframework.checker.nullness.qual.Nullable;
-import org.jboss.netty.channel.ChannelException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +42,7 @@ import org.glowroot.local.store.DataSource;
 import org.glowroot.local.store.GaugePointDao;
 import org.glowroot.local.store.StorageModule;
 import org.glowroot.local.store.TraceDao;
+import org.glowroot.local.ui.HttpServer.AnyAvailablePortBindException;
 import org.glowroot.local.ui.HttpServer.PortChangeFailedException;
 import org.glowroot.markers.OnlyUsedByTests;
 import org.glowroot.markers.ThreadSafe;
@@ -62,6 +62,14 @@ public class LocalUiModule {
     // this is used for the demo site so there can be a standby instance on a different port
     @Nullable
     private static final Integer port = Integer.getInteger("glowroot.internal.ui.port");
+
+    static {
+        // ui module uses undertow which uses jboss logging, which needs to be configured not to
+        // use/initialize jdk logging
+        System.setProperty("org.jboss.logging.provider", "slf4j");
+
+        System.setProperty("org.xnio.MBEAN_REGISTRATION_DISABLED", "true");
+    }
 
     // httpServer is only null if it could not even bind to port 0 (any available port)
     @Nullable
@@ -143,8 +151,6 @@ public class LocalUiModule {
         jsonServices.add(mbeanGaugeJsonService);
         jsonServices.add(adminJsonService);
 
-        // for now only a single http worker thread to keep # of threads down
-        final int numWorkerThreads = 1;
         int port;
         if (LocalUiModule.port == null) {
             port = configService.getUserInterfaceConfig().getPort();
@@ -152,9 +158,8 @@ public class LocalUiModule {
             port = LocalUiModule.port;
         }
         String bindAddress = getBindAddress(properties);
-        httpServer = buildHttpServer(bindAddress, port, numWorkerThreads, httpSessionManager,
-                indexHtmlHttpService, layoutJsonService, traceDetailHttpService,
-                traceExportHttpService, jsonServices);
+        httpServer = buildHttpServer(bindAddress, port, httpSessionManager, indexHtmlHttpService,
+                layoutJsonService, traceDetailHttpService, traceExportHttpService, jsonServices);
         if (httpServer != null) {
             configJsonService.setHttpServer(httpServer);
         }
@@ -188,7 +193,7 @@ public class LocalUiModule {
     @OnlyUsedByTests
     public void changeHttpServerPort(int newPort) throws PortChangeFailedException {
         if (httpServer != null) {
-            httpServer.changePort(newPort);
+            httpServer.changePort(newPort).stop();
         }
     }
 
@@ -203,7 +208,7 @@ public class LocalUiModule {
     }
 
     @Nullable
-    private static HttpServer buildHttpServer(String bindAddress, int port, int numWorkerThreads,
+    private static HttpServer buildHttpServer(String bindAddress, int port,
             HttpSessionManager httpSessionManager, IndexHtmlHttpService indexHtmlHttpService,
             LayoutJsonService layoutJsonService, TraceDetailHttpService traceDetailHttpService,
             TraceExportHttpService traceExportHttpService, List<Object> jsonServices) {
@@ -236,9 +241,9 @@ public class LocalUiModule {
         uriMappings.put(Pattern.compile("^/backend/trace/outlier-profile$"),
                 traceDetailHttpService);
         try {
-            return new HttpServer(bindAddress, port, numWorkerThreads, layoutJsonService,
-                    uriMappings.build(), httpSessionManager, jsonServices);
-        } catch (ChannelException e) {
+            return new HttpServer(bindAddress, port, layoutJsonService, uriMappings.build(),
+                    httpSessionManager, jsonServices);
+        } catch (AnyAvailablePortBindException e) {
             // binding to the specified port failed and binding to port 0 (any port) failed
             logger.error("error binding to any port, the user interface will not be available", e);
             return null;

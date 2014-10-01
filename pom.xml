@@ -73,10 +73,21 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>io.netty</groupId>
-        <artifactId>netty</artifactId>
-        <!-- TODO upgrade to netty 4 -->
-        <version>3.9.4.Final</version>
+        <groupId>io.undertow</groupId>
+        <artifactId>undertow-core</artifactId>
+        <version>1.2.0.Beta3</version>
+      </dependency>
+      <dependency>
+        <!-- need to use patched xnio, can remove once undertow uses patched xnio -->
+        <groupId>org.jboss.xnio</groupId>
+        <artifactId>xnio-api</artifactId>
+        <version>3.4.0.Beta1-SNAPSHOT</version>
+      </dependency>
+      <dependency>
+        <!-- need to use patched xnio, can remove once undertow uses patched xnio -->
+        <groupId>org.jboss.xnio</groupId>
+        <artifactId>xnio-nio</artifactId>
+        <version>3.4.0.Beta1-SNAPSHOT</version>
       </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>

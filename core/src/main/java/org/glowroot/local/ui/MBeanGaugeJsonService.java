@@ -37,6 +37,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
 import com.google.common.io.CharStreams;
+import io.undertow.util.StatusCodes;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +51,6 @@ import org.glowroot.jvm.LazyPlatformMBeanServer;
 import org.glowroot.markers.Singleton;
 
 import static org.glowroot.common.ObjectMappers.checkRequiredProperty;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.CONFLICT;
 
 /**
  * Json service to support gauge configuration.
@@ -150,7 +150,7 @@ class MBeanGaugeJsonService {
         } catch (DuplicateMBeanObjectNameException e) {
             // log exception at debug level
             logger.debug(e.getMessage(), e);
-            throw new JsonServiceException(CONFLICT, "mbeanObjectName");
+            throw new JsonServiceException(StatusCodes.CONFLICT, "mbeanObjectName");
         }
         StringBuilder sb = new StringBuilder();
         JsonGenerator jg = mapper.getFactory().createGenerator(CharStreams.asWriter(sb));

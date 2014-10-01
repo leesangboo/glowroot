@@ -83,6 +83,11 @@ public class WeavingClassFileTransformer implements ClassFileTransformer {
 
     private byte/*@Nullable*/[] transformInternal(@Nullable ClassLoader loader, String className,
             @Nullable ProtectionDomain protectionDomain, byte[] bytes) {
+        // this conditional must be first, since it is shaded to org/glowroot/shaded/xnio/Xnio
+        // and then would get picked up by the conditional below
+        if (className.equals("org/xnio/Xnio")) {
+            return XnioMonkeyPatch.transformXnioClass(bytes);
+        }
         // don't weave glowroot classes, including shaded classes like h2 jdbc driver
         // (can't just match "org/glowroot/" since that would match integration test classes)
         if (className.startsWith("org/glowroot/api/")

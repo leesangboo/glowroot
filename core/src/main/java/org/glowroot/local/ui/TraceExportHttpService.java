@@ -17,12 +17,15 @@ package org.glowroot.local.ui;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.net.URL;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Charsets;
@@ -30,14 +33,11 @@ import com.google.common.collect.Lists;
 import com.google.common.io.CharSource;
 import com.google.common.io.Resources;
 import com.google.common.net.MediaType;
-import org.checkerframework.checker.nullness.qual.Nullable;
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.channel.Channel;
-import org.jboss.netty.handler.codec.http.DefaultHttpChunk;
-import org.jboss.netty.handler.codec.http.DefaultHttpResponse;
-import org.jboss.netty.handler.codec.http.HttpRequest;
-import org.jboss.netty.handler.codec.http.HttpResponse;
-import org.jboss.netty.handler.stream.ChunkedInput;
+import io.undertow.server.HttpHandler;
+import io.undertow.server.HttpServerExchange;
+import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
+import io.undertow.util.StatusCodes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,11 +45,6 @@ import org.glowroot.collector.Trace;
 import org.glowroot.local.ui.TraceCommonService.TraceExport;
 import org.glowroot.markers.OnlyUsedByTests;
 import org.glowroot.markers.Singleton;
-
-import static org.jboss.netty.handler.codec.http.HttpHeaders.Names.CONTENT_TYPE;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.NOT_FOUND;
-import static org.jboss.netty.handler.codec.http.HttpResponseStatus.OK;
-import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
  * Http service to export a trace as a complete html page, bound to /export/trace. It is not bound
@@ -60,7 +55,7 @@ import static org.jboss.netty.handler.codec.http.HttpVersion.HTTP_1_1;
  */
 @VisibleForTesting
 @Singleton
-public class TraceExportHttpService implements HttpService {
+public class TraceExportHttpService implements HttpHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(TraceExportHttpService.class);
 
@@ -71,54 +66,48 @@ public class TraceExportHttpService implements HttpService {
     }
 
     @Override
-    @Nullable
-    public HttpResponse handleRequest(HttpRequest request, Channel channel) throws IOException,
-            SQLException {
-        String uri = request.getUri();
-        String id = uri.substring(uri.lastIndexOf('/') + 1);
+    public void handleRequest(HttpServerExchange exchange) throws IOException, SQLException {
+        String requestPath = exchange.getRequestPath();
+        String id = requestPath.substring(requestPath.lastIndexOf('/') + 1);
         logger.debug("handleRequest(): id={}", id);
         TraceExport export = traceCommonService.getExport(id);
         if (export == null) {
             logger.warn("no trace found for id: {}", id);
-            return new DefaultHttpResponse(HTTP_1_1, NOT_FOUND);
+            exchange.setResponseCode(StatusCodes.NOT_FOUND);
+            return;
         }
-        ChunkedInput in = getExportChunkedInput(export);
-        HttpResponse response = new DefaultHttpResponse(HTTP_1_1, OK);
-        response.headers().set(CONTENT_TYPE, MediaType.ZIP.toString());
-        response.headers().set("Content-Disposition",
-                "attachment; filename=" + getFilename(export.getTrace()) + ".zip");
-        HttpServices.preventCaching(response);
-        response.setChunked(true);
-        channel.write(response);
-        channel.write(in);
-        // return null to indicate streaming
-        return null;
-    }
-
-    private ChunkedInput getExportChunkedInput(TraceExport export) throws IOException {
         CharSource charSource = render(export);
-        return ChunkedInputs.fromReaderToZipFileDownload(charSource.openStream(),
-                getFilename(export.getTrace()));
+        String filename = getFilename(export.getTrace());
+
+        exchange.getResponseHeaders().add(Headers.CONTENT_TYPE, MediaType.ZIP.toString());
+        exchange.getResponseHeaders().add(HttpString.tryFromString("Content-Disposition"),
+                "attachment; filename=" + filename + ".zip");
+        HttpServices.preventCaching(exchange);
+
+        exchange.startBlocking();
+        ZipOutputStream zipOut = new ZipOutputStream(exchange.getOutputStream());
+        zipOut.putNextEntry(new ZipEntry(filename + ".html"));
+
+        OutputStreamWriter out = new OutputStreamWriter(zipOut, Charsets.UTF_8);
+        charSource.copyTo(out);
+        out.close();
     }
 
-    // this method exists because tests cannot use (sometimes) shaded netty ChunkedInput
     @OnlyUsedByTests
     public byte[] getExportBytes(String id) throws Exception {
         TraceExport export = traceCommonService.getExport(id);
         if (export == null) {
             throw new IllegalStateException("No trace found for id '" + id + "'");
         }
-        ChunkedInput chunkedInput = getExportChunkedInput(export);
+        CharSource charSource = render(export);
+
         ByteArrayOutputStream baos = new ByteArrayOutputStream(65536);
-        while (chunkedInput.hasNextChunk()) {
-            DefaultHttpChunk chunk = (DefaultHttpChunk) chunkedInput.nextChunk();
-            if (chunk != null) {
-                ChannelBuffer content = chunk.getContent();
-                byte[] bytes = new byte[content.readableBytes()];
-                content.readBytes(bytes);
-                baos.write(bytes);
-            }
-        }
+        ZipOutputStream zipOut = new ZipOutputStream(baos);
+        zipOut.putNextEntry(new ZipEntry(getFilename(export.getTrace()) + ".html"));
+
+        OutputStreamWriter out = new OutputStreamWriter(zipOut, Charsets.UTF_8);
+        charSource.copyTo(out);
+        out.close();
         return baos.toByteArray();
     }
 

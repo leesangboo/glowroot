@@ -16,11 +16,18 @@
 package org.glowroot.sandbox.ui;
 
 import java.io.File;
+import java.net.URI;
+import java.net.URISyntaxException;
 
 import com.google.common.base.Charsets;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.Files;
+import io.undertow.Handlers;
+import io.undertow.Undertow;
+import io.undertow.server.HttpHandler;
+import io.undertow.server.handlers.proxy.ProxyHandler;
+import io.undertow.server.handlers.proxy.SimpleProxyClientProvider;
 
 import org.glowroot.container.AppUnderTest;
 import org.glowroot.container.Container;
@@ -40,6 +47,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 public class UiSandboxMain {
 
     private static final boolean useJavaagent = false;
+    private static final boolean startReverseProxy = false;
     private static final boolean rollOverQuickly = false;
 
     static {
@@ -85,7 +93,26 @@ public class UiSandboxMain {
             userInterfaceConfig.setDefaultTransactionType("Sandbox");
             container.getConfigService().updateUserInterfaceConfig(userInterfaceConfig);
         }
+        int port = container.getConfigService().getUserInterfaceConfig().getPort();
+        if (startReverseProxy) {
+            startReverseProxy(port + 1, port);
+        }
         container.executeAppUnderTest(GenerateTraces.class);
+    }
+
+    private static void startReverseProxy(int listenPort, int destPort) throws URISyntaxException {
+        URI uri = new URI("http://localhost:" + destPort);
+        SimpleProxyClientProvider proxyClient = new SimpleProxyClientProvider(uri);
+        ProxyHandler proxyHandler = Handlers.proxyHandler(proxyClient);
+        HttpHandler handler = Handlers.rewrite("regex['^/glowroot/(.*)?']", "/$1",
+                UiSandboxMain.class.getClassLoader(), proxyHandler);
+        handler = Handlers.rewrite("regex['^/glowroot$']", "/",
+                UiSandboxMain.class.getClassLoader(), handler);
+        Undertow.builder()
+                .addHttpListener(listenPort, "0.0.0.0")
+                .setHandler(handler)
+                .build()
+                .start();
     }
 
     public static class GenerateTraces implements AppUnderTest {
