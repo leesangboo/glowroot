@@ -21,7 +21,7 @@ import org.apache.jackrabbit.core.persistence.pool.BundleDbPersistenceManager;
  * @author Trask Stalnaker
  * @since 0.5
  */
-public class JsrInlinedMethodMisc implements Misc {
+public class JsrMethodMisc implements Misc {
 
     @Override
     public void execute1() {}

@@ -900,7 +900,7 @@ public class SomeAspect {
     @Pointcut(className = "org.apache.jackrabbit.core.persistence.pool.BundleDbPersistenceManager",
             methodName = "loadBundle",
             methodParameterTypes = {"org.apache.jackrabbit.core.id.NodeId"})
-    public static class TestJSRInlinedMethodAdvice {}
+    public static class TestJSRMethodAdvice {}
 
     public static class TestClassMeta {
 

@@ -78,7 +78,7 @@ import org.glowroot.weaving.SomeAspect.PrimitiveWithWildcardAdvice;
 import org.glowroot.weaving.SomeAspect.StaticAdvice;
 import org.glowroot.weaving.SomeAspect.SuperBasicAdvice;
 import org.glowroot.weaving.SomeAspect.TestClassMeta;
-import org.glowroot.weaving.SomeAspect.TestJSRInlinedMethodAdvice;
+import org.glowroot.weaving.SomeAspect.TestJSRMethodAdvice;
 import org.glowroot.weaving.SomeAspect.TestMethodMeta;
 import org.glowroot.weaving.SomeAspect.ThrowableToStringAdvice;
 import org.glowroot.weaving.SomeAspect.WildMethodAdvice;
@@ -1145,10 +1145,9 @@ public class WeaverTest {
     }
 
     @Test
-    // test weaving against JSR bytecode that ends up being inlined via JSRInlinerAdapter
-    public void shouldWeaveJsrInlinedBytecode() throws Exception {
-        Misc test = newWovenObject(JsrInlinedMethodMisc.class, Misc.class,
-                TestJSRInlinedMethodAdvice.class);
+    // test weaving against JSR bytecode
+    public void shouldWeaveJsrBytecode() throws Exception {
+        Misc test = newWovenObject(JsrMethodMisc.class, Misc.class, TestJSRMethodAdvice.class);
         test.executeWithReturn();
     }
 
