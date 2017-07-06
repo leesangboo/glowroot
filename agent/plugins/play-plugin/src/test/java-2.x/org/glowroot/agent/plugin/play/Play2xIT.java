@@ -140,6 +140,12 @@ public class Play2xIT {
         Trace.Entry entry = i.next();
         assertThat(entry.getDepth()).isEqualTo(0);
         assertThat(entry.getMessage()).isEqualTo("trace entry marker / CreateTraceEntry");
+        
+        if (i.hasNext()) {
+            entry = i.next();
+            System.out.println("depth=" + entry.getDepth());
+            System.out.println("message=" + entry.getMessage());
+        }
 
         assertThat(i.hasNext()).isFalse();
     }
