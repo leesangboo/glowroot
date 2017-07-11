@@ -15,6 +15,7 @@
  */
 package org.glowroot.agent.weaving;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 import com.google.common.collect.ImmutableList;
@@ -26,9 +27,21 @@ import org.glowroot.agent.plugin.api.weaving.Shim;
 @Value.Immutable
 abstract class ShimType {
 
+    private static final Method shimValueMethod;
+
+    static {
+        try {
+            shimValueMethod = Shim.class.getMethod("value");
+        } catch (SecurityException e) {
+            throw new RuntimeException(e);
+        } catch (NoSuchMethodException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     static ShimType create(Shim shim, Class<?> iface) {
         ImmutableShimType.Builder builder = ImmutableShimType.builder();
-        builder.addTargets(shim.value());
+        builder.addTargets(getValue(shim));
         builder.iface(Type.getType(iface));
         for (Method method : iface.getMethods()) {
             if (method.isAnnotationPresent(Shim.class)) {
@@ -41,4 +54,26 @@ abstract class ShimType {
     abstract Type iface();
     abstract ImmutableList<String> targets();
     abstract ImmutableList<Method> shimMethods();
+
+    // this is needed to support plugins compiled against glowroot-agent-plugin-api versions prior
+    // to 0.9.22 (instead of just calling shim.value() directly)
+    static String[] getValue(Shim shim) {
+        Object value;
+        try {
+            value = shimValueMethod.invoke(shim);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(e);
+        } catch (InvocationTargetException e) {
+            throw new RuntimeException(e);
+        }
+        if (value instanceof String[]) {
+            return (String[]) value;
+        } else if (value instanceof String) {
+            return new String[] {(String) value};
+        } else if (value == null) {
+            throw new IllegalStateException("Unexpected @Shim value: null");
+        } else {
+            throw new IllegalStateException("Unexpected @Shim value class: " + value.getClass());
+        }
+    }
 }
